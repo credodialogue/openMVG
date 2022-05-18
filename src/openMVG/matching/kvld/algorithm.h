@@ -112,7 +112,7 @@ inline bool anglefrom( float x, float y, float& angle )
     ang -= 2 * PI_;
   angle = ang;
   assert( angle >= 0 && angle < 2 * PI_ );
-  _angle = angle;
+  
   return true;
 }
 
