@@ -24,6 +24,7 @@
 #include "openMVG/sfm/sfm_data_transform.hpp"
 #include "openMVG/sfm/sfm_data.hpp"
 #include "openMVG/system/logger.hpp"
+#include "openMVG/multiview/triangulation.hpp"
 #include "openMVG/types.hpp"
 
 #include <ceres/rotation.h>
@@ -183,13 +184,18 @@ bool Bundle_Adjustment_Ceres::Adjust
   double pose_center_robust_fitting_error = 0.0;
   openMVG::geometry::Similarity3 sim_to_center;
   bool b_usable_prior = false;
-  if (options.use_motion_priors_opt && sfm_data.GetViews().size() > 3)
+  std::set<IndexT> extrinsics_prior_outliers;
+  std::set<IndexT> control_point_outliers;
+
+  if (options.use_motion_priors_opt)
   {
     // - Compute a robust X-Y affine transformation & apply it
     // - This early transformation enhance the conditionning (solution closer to the Prior coordinate system)
     {
       // Collect corresponding camera centers
       std::vector<Vec3> X_SfM, X_GPS;
+      std::vector<uint32_t> priors_id;
+      std::vector<size_t> fixed_priors;
       for (const auto & view_it : sfm_data.GetViews())
       {
         const sfm::ViewPriors * prior = dynamic_cast<sfm::ViewPriors*>(view_it.second.get());
@@ -197,20 +203,156 @@ bool Bundle_Adjustment_Ceres::Adjust
         {
           X_SfM.push_back( sfm_data.GetPoses().at(prior->id_pose).center() );
           X_GPS.push_back( prior->pose_center_ );
+          
+          auto extrinsics_opt = options.extrinsics_opt & sfm_data.GetExtrinsicsOpts(prior->id_pose);
+          if ((extrinsics_opt & Extrinsic_Parameter_Type::ADJUST_TRANSLATION) == Extrinsic_Parameter_Type::NONE)
+              fixed_priors.push_back(priors_id.size());
+
+          priors_id.push_back(prior->id_view);
         }
       }
+
+      auto view_priors_count = priors_id.size();
+      auto fixed_view_priors_count = fixed_priors.size();
+
+      for (const auto& gcp_it : sfm_data.control_points)
+      {
+          if (std::isnan(gcp_it.second.X.z()))
+              continue;
+          Vec3 resected_point;
+          auto adjustment_opt = sfm_data.GetCtrlPointOpts(gcp_it.first);
+
+          {
+              std::vector<std::pair<uint32_t, Vec2>> points;
+              for (const auto& obs_it : gcp_it.second.obs)
+              {
+                  if (sfm_data.IsPoseAndIntrinsicDefined(sfm_data.GetViews().at(obs_it.first).get()))
+                  {
+                      points.emplace_back(obs_it.first, obs_it.second.x);
+                  }
+              }
+              if (points.size() < 2)
+                  continue;
+              auto max_distance = 0.0;
+              auto view_pair = std::make_pair(0, points.size());
+              for (auto xx1 = 0; xx1 < points.size(); xx1++)
+              {
+                   for (auto xx2 = xx1 + 1; xx2 < points.size(); xx2++)
+                   {
+                       const auto& view_I = sfm_data.GetViews().at(points[xx1].first);
+                       const auto& pose_I = sfm_data.GetPoseOrDie(view_I.get());
+                       const auto& view_J = sfm_data.GetViews().at(points[xx2].first);
+                       const auto& pose_J = sfm_data.GetPoseOrDie(view_J.get());
+                       auto d = (pose_I.center() - pose_J.center()).norm();
+                       if (d > max_distance)
+                       {
+                           max_distance = d;
+                           view_pair = std::make_pair(xx1, xx2);
+                       }
+                   }
+              }
+              const auto& view_I = sfm_data.GetViews().at(points[view_pair.first].first);
+              const auto& pose_I = sfm_data.GetPoseOrDie(view_I.get());
+              const auto& cam_I = sfm_data.GetIntrinsics().at(view_I->id_intrinsic);
+              const auto xI_ud = cam_I->get_ud_pixel(points[view_pair.first].second);
+              const auto& view_J = sfm_data.GetViews().at(points[view_pair.second].first);
+              const auto& pose_J = sfm_data.GetPoseOrDie(view_J.get());
+              const auto& cam_J = sfm_data.GetIntrinsics().at(view_J->id_intrinsic);
+              const auto xJ_ud = cam_J->get_ud_pixel(points[view_pair.second].second);
+              if (!Triangulate2View(
+                  pose_I.rotation(),
+                  pose_I.translation(),
+                  (*cam_I)(xI_ud),
+                  pose_J.rotation(),
+                  pose_J.translation(),
+                  (*cam_J)(xJ_ud),
+                  resected_point
+              ))
+                  continue;
+          }
+
+          X_SfM.push_back(resected_point);
+          X_GPS.push_back(gcp_it.second.X);
+          
+          if (adjustment_opt == Structure_Parameter_Type::NONE)
+              fixed_priors.push_back(priors_id.size());
+          priors_id.push_back(gcp_it.first);
+      }
+
+      if (fixed_priors.size() >= 3 && fixed_priors.size() != priors_id.size())
+      {
+          // fixed priors have highest priority - use them if enough
+          view_priors_count = fixed_view_priors_count;
+          std::vector<Vec3> sfm_coords, gps_coords;
+          std::vector<uint32_t> fixed_priors_id;
+          for (auto idx : fixed_priors)
+          {
+              sfm_coords.push_back(X_SfM[idx]);
+              gps_coords.push_back(X_GPS[idx]);
+              fixed_priors_id.push_back(priors_id[idx]);
+          }
+          X_SfM = std::move(sfm_coords);
+          X_GPS = std::move(gps_coords);
+          priors_id = std::move(fixed_priors_id);
+      }
+
       openMVG::geometry::Similarity3 sim;
 
+      if (X_GPS.size() == 1)
+      {
+          b_usable_prior = true;
+          sim.pose_.center() = X_SfM.front() - X_GPS.front();
+          openMVG::sfm::ApplySimilarity(sim, sfm_data);
+      }
+      else if (X_GPS.size() == 2)
+      {
+          b_usable_prior = true;
+          sim.pose_.center() = X_SfM.front();
+          Vec3 v1 = X_SfM.back() - X_SfM.front();
+          Vec3 v2 = X_GPS.back() - X_GPS.front();
+          auto l1 = v1.norm();
+          auto l2 = v2.norm();
+          if (l1 > std::numeric_limits<double>::min() && l2 > std::numeric_limits<double>::min())
+          {
+              auto q = Eigen::Quaternion<double>::FromTwoVectors(v1, v2);
+              sim.pose_.rotation() = q.matrix();
+              sim.scale_ = l2 / l1;
+          }
+          
+          openMVG::sfm::ApplySimilarity(sim, sfm_data);
+          openMVG::geometry::Similarity3 sim2;
+          sim2.pose_.center() = -X_GPS.front();
+          openMVG::sfm::ApplySimilarity(sim2, sfm_data);
+      }
       // Compute the registration:
-      if (X_GPS.size() > 3)
+      else if (X_GPS.size() >= 3)
       {
         const Mat X_SfM_Mat = Eigen::Map<Mat>(X_SfM[0].data(),3, X_SfM.size());
         const Mat X_GPS_Mat = Eigen::Map<Mat>(X_GPS[0].data(),3, X_GPS.size());
         geometry::kernel::Similarity3_Kernel kernel(X_SfM_Mat, X_GPS_Mat);
-        const double lmeds_median = openMVG::robust::LeastMedianOfSquares(kernel, &sim);
+        double outlier_threshold;
+        const double lmeds_median = openMVG::robust::LeastMedianOfSquares(kernel, &sim, &outlier_threshold);
         if (lmeds_median != std::numeric_limits<double>::max())
         {
           b_usable_prior = true; // PRIOR can be used safely
+
+          for (int i = 0; i < X_SfM_Mat.cols(); ++i)
+          {
+            const double residual_error = kernel.Error(i, sim);
+            if (residual_error >= outlier_threshold)
+            {
+                if (i < view_priors_count)
+                {
+                    extrinsics_prior_outliers.insert(priors_id[i]);
+                    std::cout << "extrinsics prior " << priors_id[i] << " removed" << std::endl;
+                }
+                else
+                {
+                    control_point_outliers.insert(priors_id[i]);
+                    std::cout << "control_point " << priors_id[i] << " removed" << std::endl;
+                }
+            }
+          }
 
           // Compute the median residual error once the registration is applied
           for (Vec3 & pos : X_SfM) // Transform SfM poses for residual computation
@@ -223,8 +365,32 @@ bool Bundle_Adjustment_Ceres::Adjust
 
           // Apply the found transformation to the SfM Data Scene
           openMVG::sfm::ApplySimilarity(sim, sfm_data);
+        }
+      }
 
-          // Move entire scene to center for better numerical stability
+      for (const auto & view_it : sfm_data.GetViews())
+      {
+        const sfm::ViewPriors * prior = dynamic_cast<sfm::ViewPriors*>(view_it.second.get());
+        if (prior == nullptr || !sfm_data.IsPoseAndIntrinsicDefined(prior))
+            continue;
+        auto ext_opt = sfm_data.GetExtrinsicsOpts(prior->id_pose);
+        if (prior->b_use_pose_center_ && 
+            (ext_opt & Extrinsic_Parameter_Type::ADJUST_TRANSLATION) !=
+            Extrinsic_Parameter_Type::ADJUST_TRANSLATION)
+        {
+          sfm_data.poses.at(prior->id_pose).center() = prior->pose_center_;
+        }
+        if (prior->b_use_pose_rotation_ && 
+            (ext_opt & Extrinsic_Parameter_Type::ADJUST_ROTATION) !=
+            Extrinsic_Parameter_Type::ADJUST_ROTATION)
+        {
+          sfm_data.poses.at(prior->id_pose).rotation() = prior->pose_rotation_;
+        }
+      }
+
+      if (b_usable_prior)
+      {
+            // Move entire scene to center for better numerical stability
           Vec3 pose_centroid = Vec3::Zero();
           for (const auto & pose_it : sfm_data.poses)
           {
@@ -232,7 +398,6 @@ bool Bundle_Adjustment_Ceres::Adjust
           }
           sim_to_center = openMVG::geometry::Similarity3(openMVG::sfm::Pose3(Mat3::Identity(), pose_centroid), 1.0);
           openMVG::sfm::ApplySimilarity(sim_to_center, sfm_data, true);
-        }
       }
       else
       {
@@ -263,7 +428,9 @@ bool Bundle_Adjustment_Ceres::Adjust
 
     double * parameter_block = &map_poses.at(indexPose)[0];
     problem.AddParameterBlock(parameter_block, 6);
-    if (options.extrinsics_opt == Extrinsic_Parameter_Type::NONE)
+    auto extrinsics_opt = options.extrinsics_opt & sfm_data.GetExtrinsicsOpts(indexPose);
+    if (extrinsics_opt == Extrinsic_Parameter_Type::NONE && 
+          extrinsics_prior_outliers.count(pose_it.first) == 0)
     {
       // set the whole parameter block as constant for best performance
       problem.SetParameterBlockConstant(parameter_block);
@@ -271,14 +438,13 @@ bool Bundle_Adjustment_Ceres::Adjust
     else  // Subset parametrization
     {
       std::vector<int> vec_constant_extrinsic;
-      // If we adjust only the translation, we must set ROTATION as constant
-      if (options.extrinsics_opt == Extrinsic_Parameter_Type::ADJUST_TRANSLATION)
+      if ((extrinsics_opt & Extrinsic_Parameter_Type::ADJUST_ROTATION) == Extrinsic_Parameter_Type::NONE)
       {
         // Subset rotation parametrization
         vec_constant_extrinsic.insert(vec_constant_extrinsic.end(), {0,1,2});
       }
-      // If we adjust only the rotation, we must set TRANSLATION as constant
-      if (options.extrinsics_opt == Extrinsic_Parameter_Type::ADJUST_ROTATION)
+      if ((extrinsics_opt & Extrinsic_Parameter_Type::ADJUST_TRANSLATION) == Extrinsic_Parameter_Type::NONE && 
+          extrinsics_prior_outliers.count(pose_it.first) == 0)
       {
         // Subset translation parametrization
         vec_constant_extrinsic.insert(vec_constant_extrinsic.end(), {3,4,5});
@@ -304,7 +470,8 @@ bool Bundle_Adjustment_Ceres::Adjust
       {
         double * parameter_block = &map_intrinsics.at(indexCam)[0];
         problem.AddParameterBlock(parameter_block, map_intrinsics.at(indexCam).size());
-        if (options.intrinsics_opt == Intrinsic_Parameter_Type::NONE)
+        auto intrinsics_opt = options.intrinsics_opt & sfm_data.GetIntrinsicsOpts(indexCam);
+        if (intrinsics_opt == Intrinsic_Parameter_Type::NONE)
         {
           // set the whole parameter block as constant for best performance
           problem.SetParameterBlockConstant(parameter_block);
@@ -312,13 +479,31 @@ bool Bundle_Adjustment_Ceres::Adjust
         else
         {
           const std::vector<int> vec_constant_intrinsic =
-            intrinsic_it.second->subsetParameterization(options.intrinsics_opt);
+            intrinsic_it.second->subsetParameterization(intrinsics_opt);
           if (!vec_constant_intrinsic.empty())
           {
             ceres::SubsetParameterization *subset_parameterization =
               new ceres::SubsetParameterization(
                 map_intrinsics.at(indexCam).size(), vec_constant_intrinsic);
             problem.SetParameterization(parameter_block, subset_parameterization);
+          }
+          if ((intrinsics_opt & Intrinsic_Parameter_Type::ADJUST_FOCAL_LENGTH) ==
+              Intrinsic_Parameter_Type::ADJUST_FOCAL_LENGTH)
+          {
+	          const double focal_length_max_percent = 0.2;
+	          auto focal_length = *(parameter_block);
+	          problem.SetParameterLowerBound(parameter_block, 0, focal_length * (1.0 - focal_length_max_percent));
+	          problem.SetParameterUpperBound(parameter_block, 0, focal_length * (1.0 + focal_length_max_percent));
+          }
+          if ((intrinsics_opt & Intrinsic_Parameter_Type::ADJUST_PRINCIPAL_POINT) ==
+              Intrinsic_Parameter_Type::ADJUST_PRINCIPAL_POINT)
+          {
+	          const double optical_center_min_percent = 0.45;
+	          const double optical_center_max_percent = 0.55;
+	          problem.SetParameterLowerBound(parameter_block, 1, optical_center_min_percent * intrinsic_it.second->w());
+	          problem.SetParameterUpperBound(parameter_block, 1, optical_center_max_percent * intrinsic_it.second->w());
+	          problem.SetParameterLowerBound(parameter_block, 2, optical_center_min_percent * intrinsic_it.second->h());
+	          problem.SetParameterUpperBound(parameter_block, 2, optical_center_max_percent * intrinsic_it.second->h());
           }
         }
       }
@@ -340,12 +525,14 @@ bool Bundle_Adjustment_Ceres::Adjust
   for (auto & structure_landmark_it : sfm_data.structure)
   {
     const Observations & obs = structure_landmark_it.second.obs;
-
+    bool has_block = false;
     for (const auto & obs_it : obs)
     {
       // Build the residual block corresponding to the track observation:
       const View * view = sfm_data.views.at(obs_it.first).get();
-
+      if (!sfm_data.IsPoseAndIntrinsicDefined(view))
+            continue;
+      has_block = true;
       // Each Residual block takes a point and a camera as input and outputs a 2
       // dimensional residual. Internally, the cost function stores the observed
       // image location and compares the reprojection against the observation.
@@ -377,7 +564,7 @@ bool Bundle_Adjustment_Ceres::Adjust
         return false;
       }
     }
-    if (options.structure_opt == Structure_Parameter_Type::NONE)
+    if (has_block && options.structure_opt == Structure_Parameter_Type::NONE)
       problem.SetParameterBlockConstant(structure_landmark_it.second.X.data());
   }
 
@@ -387,12 +574,20 @@ bool Bundle_Adjustment_Ceres::Adjust
     // - fixed 3D points with weighted observations
     for (auto & gcp_landmark_it : sfm_data.control_points)
     {
+        if (std::isnan(gcp_landmark_it.second.X.z()))
+            continue;
+        
       const Observations & obs = gcp_landmark_it.second.obs;
 
+      auto parameter_block = gcp_landmark_it.second.X.data();
+
+      bool has_block = false;
       for (const auto & obs_it : obs)
       {
         // Build the residual block corresponding to the track observation:
         const View * view = sfm_data.views.at(obs_it.first).get();
+        if (!sfm_data.IsPoseAndIntrinsicDefined(view))
+            continue;
 
         // Each Residual block takes a point and a camera as input and outputs a 2
         // dimensional residual. Internally, the cost function stores the observed
@@ -405,33 +600,50 @@ bool Bundle_Adjustment_Ceres::Adjust
 
         if (cost_function)
         {
+          has_block = true;
           if (!map_intrinsics.at(view->id_intrinsic).empty())
           {
             problem.AddResidualBlock(cost_function,
                                      nullptr,
                                      &map_intrinsics.at(view->id_intrinsic)[0],
                                      &map_poses.at(view->id_pose)[0],
-                                     gcp_landmark_it.second.X.data());
+                                     parameter_block);
           }
           else
           {
             problem.AddResidualBlock(cost_function,
                                      nullptr,
                                      &map_poses.at(view->id_pose)[0],
-                                     gcp_landmark_it.second.X.data());
+                                     parameter_block);
           }
         }
       }
-      if (obs.empty())
+
+      if (control_point_outliers.count(gcp_landmark_it.first))
+        continue;
+
+      auto adjustment_opt = sfm_data.GetCtrlPointOpts(gcp_landmark_it.first);
+      
+      if (!has_block)
       {
         OPENMVG_LOG_ERROR
           << "Cannot use this GCP id: " << gcp_landmark_it.first
           << ". There is not linked image observation.";
       }
-      else
+      else if (adjustment_opt == Structure_Parameter_Type::NONE)
       {
         // Set the 3D point as FIXED (it's a valid GCP)
-        problem.SetParameterBlockConstant(gcp_landmark_it.second.X.data());
+        problem.SetParameterBlockConstant(parameter_block);
+      }
+      else if (adjustment_opt == Structure_Parameter_Type::ADJUST_AREA)
+      {
+          auto subset_parameterization = new ceres::SubsetParameterization(3, {2});
+          problem.SetParameterization(parameter_block, subset_parameterization);
+      }
+      else if (adjustment_opt == Structure_Parameter_Type::ADJUST_ELEVATION)
+      {
+          auto subset_parameterization = new ceres::SubsetParameterization(3, {0, 1});
+          problem.SetParameterization(parameter_block, subset_parameterization);
       }
     }
   }
@@ -453,7 +665,7 @@ bool Bundle_Adjustment_Ceres::Adjust
           cost_function,
           new ceres::HuberLoss(
             Square(pose_center_robust_fitting_error)),
-                   &map_poses.at(prior->id_view)[0]);
+                   &map_poses.at(prior->id_pose)[0]);
       }
     }
   }
@@ -475,6 +687,7 @@ bool Bundle_Adjustment_Ceres::Adjust
   ceres_config_options.num_linear_solver_threads = ceres_options_.nb_threads_;
 #endif
   ceres_config_options.parameter_tolerance = ceres_options_.parameter_tolerance_;
+  ceres_config_options.callbacks = ceres_options_.callbacks;
 
   // Solve BA
   ceres::Solver::Summary summary;
@@ -533,9 +746,9 @@ bool Bundle_Adjustment_Ceres::Adjust
         else
         {
             // Update rotation + translation
-            pose = Pose3(R_refined, -R_refined.transpose() * t_refined);
-        }
+        pose = Pose3(R_refined, -R_refined.transpose() * t_refined);
       }
+    }
     }
 
     // Update camera intrinsics with refined data
@@ -586,6 +799,10 @@ bool Bundle_Adjustment_Ceres::Adjust
         OPENMVG_LOG_INFO << os.str();
       }
     }
+    
+    sfm_data.extrinsics_prior_outliers = std::move(extrinsics_prior_outliers);
+    sfm_data.control_point_outliers = std::move(control_point_outliers);
+
     return true;
   }
 }

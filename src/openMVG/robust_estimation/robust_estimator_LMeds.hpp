@@ -45,7 +45,7 @@ template <typename Kernel>
 
   // Required number of iterations is evaluated from outliers ratio
   const uint32_t N = (min_samples<total_samples)?
-    getNumSamples(minProba, outlierRatio, min_samples): 0;
+    getNumSamples(minProba, outlierRatio, min_samples): 1;
 
   // Precompute the index [0,n] that will be used for random sampling
   std::vector<uint32_t> all_samples(total_samples);

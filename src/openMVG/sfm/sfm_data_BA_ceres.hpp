@@ -12,7 +12,11 @@
 #include "openMVG/numeric/eigen_alias_definition.hpp"
 #include "openMVG/sfm/sfm_data_BA.hpp"
 
-namespace ceres { class CostFunction; }
+namespace ceres
+{
+	class CostFunction;
+	class IterationCallback;
+}
 namespace openMVG { namespace cameras { struct IntrinsicBase; } }
 namespace openMVG { namespace sfm { struct SfM_Data; } }
 
@@ -42,6 +46,9 @@ class Bundle_Adjustment_Ceres : public Bundle_Adjustment
     double parameter_tolerance_;
     bool bUse_loss_function_;
     int max_num_iterations_;
+
+    std::vector<ceres::IterationCallback*> callbacks;
+    int max_num_iterations = 500;
 
     BA_Ceres_options(const bool bVerbose = true, bool bmultithreaded = true);
   };
