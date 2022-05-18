@@ -93,7 +93,7 @@ inline bool inside( int w, int h, int x,int y, double radius )
   return( x - radius >= 0 && y - radius >= 0 && x + radius < w && y + radius < h );
 }
 
-inline bool anglefrom( const float& x, const float& y, float& angle )
+inline bool anglefrom( float x, float y, float& angle )
 {
   float ang = 0.f;
   if (x != 0 )
@@ -112,6 +112,7 @@ inline bool anglefrom( const float& x, const float& y, float& angle )
     ang -= 2 * PI_;
   angle = ang;
   assert( angle >= 0 && angle < 2 * PI_ );
+  _angle = angle;
   return true;
 }
 

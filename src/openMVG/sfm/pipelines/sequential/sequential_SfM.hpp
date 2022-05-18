@@ -57,7 +57,7 @@ public:
   bool MakeInitialPair3D(const Pair & initialPair);
 
   /// Automatic initial pair selection (based on a 'baseline' computation score)
-  bool AutomaticInitialPairChoice(Pair & initialPair) const;
+  bool AutomaticInitialPairChoice(Pair & initialPair);
 
   /**
    * Set the default lens distortion type to use if it is declared unknown
@@ -84,9 +84,6 @@ public:
 
 protected:
 
-
-private:
-
   /// Return MSE (Mean Square Error) and a histogram of residual values.
   double ComputeResidualsHistogram(Histogram<double> * histo);
 
@@ -105,6 +102,8 @@ private:
   //----
   //-- Data
   //----
+
+  std::vector<std::pair<double, Pair>> scoring_per_pair_;
 
   // HTML logger
   std::shared_ptr<htmlDocument::htmlDocumentStream> html_doc_stream_;
@@ -127,6 +126,8 @@ private:
   Hash_Map<IndexT, double> map_ACThreshold_; // Per camera confidence (A contrario estimated threshold error)
 
   std::set<uint32_t> set_remaining_view_id_;     // Remaining camera index that can be used for resection
+  std::set<uint32_t> set_postponed_view_id_;
+  size_t prev_sz_ = std::numeric_limits<size_t>::max();
 
   ETriangulationMethod triangulation_method_ = ETriangulationMethod::DEFAULT;
 
