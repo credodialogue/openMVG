@@ -177,14 +177,14 @@ bool SequentialSfMReconstructionEngine::Process() {
   }
   // Else a starting pair was already initialized before
 
-  // Initial pair Essential Matrix and [R|t] estimation.
-  if (!MakeInitialPair3D(initial_pair_))
-    return false;
+      // Initial pair Essential Matrix and [R|t] estimation.
+      if (!MakeInitialPair3D(initial_pair_))
+          return false;
 
-  // Compute robust Resection of remaining images
-  // - group of images will be selected and resection + scene completion will be tried
-  size_t resectionGroupIndex = 0;
-  std::vector<uint32_t> vec_possible_resection_indexes;
+      // Compute robust Resection of remaining images
+      // - group of images will be selected and resection + scene completion will be tried
+      size_t resectionGroupIndex = 0;
+      std::vector<uint32_t> vec_possible_resection_indexes;
   while (FindImagesWithPossibleResection(vec_possible_resection_indexes))
   {
     bool bImageAdded = false;
@@ -314,11 +314,11 @@ bool SequentialSfMReconstructionEngine::InitLandmarkTracks()
   return map_tracks_.size() > 0;
 }
 
-bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initial_pair) const
+bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initial_pair)
 {
   // select a pair that have the largest baseline (mean angle between its bearing vectors).
 
-  const unsigned iMin_inliers_count = 100;
+  const unsigned iMin_inliers_count = 30;
   const float fRequired_min_angle = 3.0f;
   const float fLimit_max_angle = 60.0f; // More than 60 degree, we cannot rely on matches for initial pair seeding
 
@@ -328,16 +328,17 @@ bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initia
     it != sfm_data_.GetViews().end(); ++it)
   {
     const View * v = it->second.get();
-    if (sfm_data_.GetIntrinsics().count(v->id_intrinsic))
+    if (sfm_data_.GetIntrinsics().count(v->id_intrinsic) && set_remaining_view_id_.count(v->id_view))
       valid_views.insert(v->id_view);
   }
+
+  scoring_per_pair_.clear();
 
   if (valid_views.size() < 2)
   {
     return false; // There is not view that support valid intrinsic data
   }
 
-  std::vector<std::pair<double, Pair>> scoring_per_pair;
 
   // Compute the relative pose & the 'baseline score'
   system::LoggerProgress my_progress_bar( matches_provider_->pairWise_matches_.size(),
@@ -399,7 +400,7 @@ bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initia
                 cam_I, cam_J,
                 xI, xJ, relativePose_info,
                 {cam_I->w(), cam_I->h()}, {cam_J->w(), cam_J->h()},
-                256)
+              256)
               && relativePose_info.vec_inliers.size() > iMin_inliers_count)
           {
             // Triangulate inliers & compute angle between bearing vectors
@@ -407,10 +408,13 @@ bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initia
             vec_angles.reserve(relativePose_info.vec_inliers.size());
             const Pose3 pose_I = Pose3(Mat3::Identity(), Vec3::Zero());
             const Pose3 pose_J = relativePose_info.relativePose;
-            for (const uint32_t & inlier_idx : relativePose_info.vec_inliers)
+            std::sort(relativePose_info.vec_inliers.begin(), relativePose_info.vec_inliers.end());
+            openMVG::tracks::STLMAPTracks::const_iterator iterT = map_tracksCommon.begin();
+            uint32_t prev_pos = 0;
+            for (const uint32_t& inlier_idx : relativePose_info.vec_inliers)
             {
-              openMVG::tracks::STLMAPTracks::const_iterator iterT = map_tracksCommon.begin();
-              std::advance(iterT, inlier_idx);
+              std::advance(iterT, inlier_idx - prev_pos);
+              prev_pos = inlier_idx;
               tracks::submapTrack::const_iterator iter = iterT->second.begin();
               const Vec2 featI = features_provider_->feats_per_view[I][iter->second].coords().cast<double>();
               const Vec2 featJ = features_provider_->feats_per_view[J][(++iter)->second].coords().cast<double>();
@@ -425,25 +429,25 @@ bool SequentialSfMReconstructionEngine::AutomaticInitialPairChoice(Pair & initia
               vec_angles.end());
             const float scoring_angle = vec_angles[median_index];
             // Store the pair iff the pair is in the asked angle range [fRequired_min_angle;fLimit_max_angle]
-            if (scoring_angle > fRequired_min_angle &&
-                scoring_angle < fLimit_max_angle)
+            /*if (scoring_angle > fRequired_min_angle &&
+                scoring_angle < fLimit_max_angle)*/
             {
   #ifdef OPENMVG_USE_OPENMP
               #pragma omp critical
   #endif
-              scoring_per_pair.emplace_back(scoring_angle, current_pair);
+              scoring_per_pair_.emplace_back(scoring_angle, current_pair);
             }
           }
         }
       }
     } // omp section
   }
-  std::sort(scoring_per_pair.begin(), scoring_per_pair.end());
+  std::sort(scoring_per_pair_.begin(), scoring_per_pair_.end());
   // Since scoring is ordered in increasing order, reverse the order
-  std::reverse(scoring_per_pair.begin(), scoring_per_pair.end());
-  if (!scoring_per_pair.empty())
+  std::reverse(scoring_per_pair_.begin(), scoring_per_pair_.end());
+  if (!scoring_per_pair_.empty())
   {
-    initial_pair = scoring_per_pair.begin()->second;
+    initial_pair = scoring_per_pair_.begin()->second;
     return true;
   }
   return false;
@@ -557,10 +561,14 @@ bool SequentialSfMReconstructionEngine::MakeInitialPair3D(const Pair & current_p
     // Init structure
     Landmarks & landmarks = tiny_scene.structure;
 
-    for (const auto & track_iterator : map_tracksCommon)
+    std::sort(relativePose_info.vec_inliers.begin(), relativePose_info.vec_inliers.end());
+    openMVG::tracks::STLMAPTracks::const_iterator track_iterator = map_tracksCommon.begin();
+    uint32_t prev_pos = 0;
+    for (const uint32_t& inlier_idx : relativePose_info.vec_inliers)
     {
-      // Get corresponding points
-      auto iter = track_iterator.second.cbegin();
+      std::advance(track_iterator, inlier_idx - prev_pos);
+      prev_pos = inlier_idx;
+      auto iter = track_iterator->second.cbegin();
       const uint32_t
         i = iter->second,
         j = (++iter)->second;
@@ -583,8 +591,8 @@ bool SequentialSfMReconstructionEngine::MakeInitialPair3D(const Pair & current_p
         Observations obs;
         obs[view_I->id_view] = Observation(x1, i);
         obs[view_J->id_view] = Observation(x2, j);
-        landmarks[track_iterator.first].obs = std::move(obs);
-        landmarks[track_iterator.first].X = X;
+        landmarks[track_iterator->first].obs = std::move(obs);
+        landmarks[track_iterator->first].X = X;
       }
     }
     Save(tiny_scene, stlplus::create_filespec(sOut_directory_, "initialPair.ply"), ESfM_Data(ALL));
@@ -773,7 +781,7 @@ bool SequentialSfMReconstructionEngine::FindImagesWithPossibleResection(
 
   vec_possible_indexes.clear();
 
-  if (set_remaining_view_id_.empty() || sfm_data_.GetLandmarks().empty())
+  if (/*set_remaining_view_id_.empty() ||*/ sfm_data_.GetLandmarks().empty())
     return false;
 
   // Collect tracksIds
@@ -829,8 +837,15 @@ bool SequentialSfMReconstructionEngine::FindImagesWithPossibleResection(
   if (vec_putative.empty() || vec_putative[0].second == 0)
   {
     // All remaining images cannot be used for pose estimation
-    set_remaining_view_id_.clear();
-    return false;
+      if (prev_sz_ > set_postponed_view_id_.size())
+          set_remaining_view_id_.insert(set_postponed_view_id_.begin(), set_postponed_view_id_.end());
+      else
+          set_remaining_view_id_.clear();
+      prev_sz_ = set_postponed_view_id_.size();
+      //set_postponed_view_id_.clear();
+    //
+    std::cout << "no more intersections\n";
+    return !set_remaining_view_id_.empty();
   }
 
   // Add the image view index that share the most of 2D-3D correspondences
@@ -932,7 +947,7 @@ bool SequentialSfMReconstructionEngine::Resection(const uint32_t viewIndex)
   OPENMVG_LOG_INFO << "-- Trying robust Resection of view: " << viewIndex;
 
   geometry::Pose3 pose;
-  const bool bResection = sfm::SfM_Localizer::Localize
+  bool bResection = sfm::SfM_Localizer::Localize
   (
     optional_intrinsic ? resection_method_ : resection::SolverType::DLT_6POINTS,
     {view_I->ui_width, view_I->ui_height},
@@ -1136,8 +1151,8 @@ bool SequentialSfMReconstructionEngine::Resection(const uint32_t viewIndex)
                     //  - Check angle (small angle leads to imprecise triangulation)
                     angle > 2.0 &&
                     //  - Check residual values (must be inferior to the found view's AContrario threshold)
-                    residual_I.norm() < std::max(4.0, map_ACThreshold_.at(I)) &&
-                    residual_J.norm() < std::max(4.0, map_ACThreshold_.at(J))
+                    residual_I.norm() < std::max(4.0, map_ACThreshold_[I]) &&
+                    residual_J.norm() < std::max(4.0, map_ACThreshold_[J])
                     // Cheirality as been tested already in Triangulate2View
                    )
                 {
@@ -1174,7 +1189,7 @@ bool SequentialSfMReconstructionEngine::Resection(const uint32_t viewIndex)
 
           const Vec2 residual = cam_J->residual(pose_J(landmark.X), xJ);
           if (CheiralityTest((*cam_J)(xJ_ud), pose_J, landmark.X)
-              && residual.norm() < std::max(4.0, map_ACThreshold_.at(J))
+              && residual.norm() < std::max(4.0, map_ACThreshold_[J])
              )
           {
             landmark.obs[J] = Observation(xJ, allViews_of_track.at(J));

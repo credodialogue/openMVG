@@ -214,7 +214,7 @@ class Pinhole_Intrinsic_Brown_T2 : public Pinhole_Intrinsic
       return new class_type( *this );
     }
 
-  private:
+  protected:
 
 
     /**

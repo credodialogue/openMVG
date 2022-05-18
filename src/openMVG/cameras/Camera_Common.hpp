@@ -92,10 +92,10 @@ static inline bool isValid( EINTRINSIC eintrinsic )
 enum class Intrinsic_Parameter_Type : int
 {
   // Note: Use power of two values in order to use bitwise operators.
-  NONE                    = 1, // All parameters will be held constant
-  ADJUST_FOCAL_LENGTH     = 2,
-  ADJUST_PRINCIPAL_POINT  = 4,
-  ADJUST_DISTORTION       = 8,
+  NONE                    = 0, // All parameters will be held constant
+  ADJUST_FOCAL_LENGTH     = 1,
+  ADJUST_PRINCIPAL_POINT  = 2,
+  ADJUST_DISTORTION       = 4,
   ADJUST_ALL = ADJUST_FOCAL_LENGTH | ADJUST_PRINCIPAL_POINT | ADJUST_DISTORTION
 };
 

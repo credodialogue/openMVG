@@ -20,9 +20,9 @@ struct SfM_Data;
 enum class Extrinsic_Parameter_Type : int
 {
   // Note: Use power of two values in order to use bitwise operators.
-  NONE                = 1,     // Extrinsic parameters will be considered as FIXED
-  ADJUST_ROTATION     = 2,
-  ADJUST_TRANSLATION  = 4,
+  NONE                = 0,     // Extrinsic parameters will be considered as FIXED
+  ADJUST_ROTATION     = 1,
+  ADJUST_TRANSLATION  = 2,
   ADJUST_ALL = ADJUST_ROTATION | ADJUST_TRANSLATION
 };
 
@@ -43,11 +43,29 @@ operator&(Extrinsic_Parameter_Type x, Extrinsic_Parameter_Type y)
 }
 
 /// Enum to control if the Structure must be refined or not
-enum class Structure_Parameter_Type : bool
+enum class Structure_Parameter_Type : int
 {
-  NONE = false, // Structure will be held as constant
-  ADJUST_ALL = true
+  NONE = 0, // Structure will be held as constant
+  ADJUST_AREA = 1,
+  ADJUST_ELEVATION = 2,
+  ADJUST_ALL = ADJUST_AREA | ADJUST_ELEVATION,
 };
+
+inline constexpr Structure_Parameter_Type
+operator|(Structure_Parameter_Type x, Structure_Parameter_Type y)
+{
+  return static_cast<Structure_Parameter_Type>
+    (static_cast<std::underlying_type<Structure_Parameter_Type>::type>(x) |
+     static_cast<std::underlying_type<Structure_Parameter_Type>::type>(y));
+}
+
+inline constexpr Structure_Parameter_Type
+operator&(Structure_Parameter_Type x, Structure_Parameter_Type y)
+{
+  return static_cast<Structure_Parameter_Type>
+    (static_cast<std::underlying_type<Structure_Parameter_Type>::type>(x) &
+     static_cast<std::underlying_type<Structure_Parameter_Type>::type>(y));
+}
 
 /// Structure to tell to BA if GCP must be use and with which weight
 struct Control_Point_Parameter
