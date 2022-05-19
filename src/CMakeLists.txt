@@ -120,20 +120,6 @@ if (UNIX AND NOT OpenMVG_BUILD_COVERAGE)
 endif ()
 
 # ==============================================================================
-# Check C++11 support
-# ==============================================================================
-include(CXX11)
-check_for_cxx11_compiler(CXX11_COMPILER)
-# If a C++11 compiler is available, then set the appropriate flags
-if (CXX11_COMPILER)
-  set(CMAKE_CXX_STANDARD 11)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
-  set(CMAKE_CXX_EXTENSIONS OFF)
-else (CXX11_COMPILER)
-  message(FATAL_ERROR "A CXX11 compiler is required.")
-endif (CXX11_COMPILER)
-
-# ==============================================================================
 # OpenMP detection
 # ==============================================================================
 if (OpenMVG_USE_OPENMP)
