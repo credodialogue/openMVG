@@ -36,6 +36,8 @@
 namespace openMVG {
 namespace sfm {
 
+#define OPENMVG_CERES_HAS_MANIFOLD ((CERES_VERSION_MAJOR * 100 + CERES_VERSION_MINOR) >= 201)
+
 using namespace openMVG::cameras;
 using namespace openMVG::geometry;
 
@@ -445,9 +447,14 @@ bool Bundle_Adjustment_Ceres::Adjust
       }
       if (!vec_constant_extrinsic.empty())
       {
-        ceres::SubsetParameterization *subset_parameterization =
+#if OPENMVG_CERES_HAS_MANIFOLD
+        auto* subset_manifold = new ceres::SubsetManifold(6, vec_constant_extrinsic);
+        problem.SetManifold(parameter_block, subset_manifold);
+#else
+        auto *subset_parameterization =
           new ceres::SubsetParameterization(6, vec_constant_extrinsic);
         problem.SetParameterization(parameter_block, subset_parameterization);
+#endif
       }
     }
   }
@@ -476,10 +483,17 @@ bool Bundle_Adjustment_Ceres::Adjust
             intrinsic_it.second->subsetParameterization(intrinsics_opt);
           if (!vec_constant_intrinsic.empty())
           {
-            ceres::SubsetParameterization *subset_parameterization =
+#if OPENMVG_CERES_HAS_MANIFOLD
+            auto* subset_manifold =
+              new ceres::SubsetManifold(
+                map_intrinsics.at(indexCam).size(), vec_constant_intrinsic);
+            problem.SetManifold(parameter_block, subset_manifold);
+#else
+            auto *subset_parameterization =
               new ceres::SubsetParameterization(
                 map_intrinsics.at(indexCam).size(), vec_constant_intrinsic);
             problem.SetParameterization(parameter_block, subset_parameterization);
+#endif
           }
           if ((intrinsics_opt & Intrinsic_Parameter_Type::ADJUST_FOCAL_LENGTH) ==
               Intrinsic_Parameter_Type::ADJUST_FOCAL_LENGTH)
