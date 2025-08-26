@@ -649,13 +649,23 @@ bool Bundle_Adjustment_Ceres::Adjust
       }
       else if (adjustment_opt == Structure_Parameter_Type::ADJUST_AREA)
       {
+#if OPENMVG_CERES_HAS_MANIFOLD
+          auto* subset_manifold = new ceres::SubsetManifold(3, {2});
+          problem.SetManifold(parameter_block, subset_manifold);
+#else
           auto subset_parameterization = new ceres::SubsetParameterization(3, {2});
           problem.SetParameterization(parameter_block, subset_parameterization);
+#endif 
       }
       else if (adjustment_opt == Structure_Parameter_Type::ADJUST_ELEVATION)
       {
+#if OPENMVG_CERES_HAS_MANIFOLD
+          auto* subset_manifold = new ceres::SubsetManifold(3, {0, 1});
+          problem.SetManifold(parameter_block, subset_manifold);
+#else
           auto subset_parameterization = new ceres::SubsetParameterization(3, {0, 1});
           problem.SetParameterization(parameter_block, subset_parameterization);
+#endif
       }
     }
   }
