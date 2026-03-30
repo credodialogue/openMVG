@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <memory>
 #include <vector>
+#include <cassert>
 
 // Extend EIGEN_DEFINE_STL_VECTOR_SPECIALIZATION with initializer list support.
 #define EIGEN_DEFINE_STL_VECTOR_SPECIALIZATION_INITIALIZER_LIST(...)       \

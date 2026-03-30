@@ -31,6 +31,7 @@
 #define OPENMVG_MULTIVIEW_TWO_VIEW_KERNEL_HPP
 
 #include <vector>
+#include <cassert>
 
 #include "openMVG/multiview/conditioning.hpp"
 #include "openMVG/numeric/extract_columns.hpp"
